@@ -1,0 +1,58 @@
+监控页面部署
+除了对服务的降价和熔断处理 我们也可以对其进行实时监控 只需要安装监控页面即可 这里我们创建一个新的项目 导入依赖:
+                    <dependency>
+                        <groupId>org.springframework.cloud</groupId>
+                        <artifactId>spring-cloud-starter-netflix-hystrix-dashboard</artifactId>
+                        <version>2.2.10.RELEASE</version>
+                    </dependency>
+
+接着添加配置文件:
+                    server:
+                      port: 8900
+                    hystrix:
+                      dashboard:
+                        # 将localhost添加到白名单 默认是不允许的
+                        proxy-stream-allow-list: "localhost"
+
+接着创建主类 注意: 需要添加@EnableHystrixDashboard注解开启管理页面:
+                    @SpringBootApplication
+                    @EnableHystrixDashboard
+                    public class HystrixDashBoardApplication {
+
+                        public static void main(String[] args) {
+                            SpringApplication.run(HystrixDashBoardApplication.class, args);
+                        }
+
+                    }
+
+启动Hystrix管理页面服务 然后我们需要在进行监控的服务中心添加Actuator依赖:
+                    <dependency>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-starter-actuator</artifactId>
+                    </dependency>
+
+    Actuator是SpringBoot程序的监控系统 可以实现健康检查 记录信息等 在使用之前需要引入spring-boot-starter-actuator 并做简单的配置即可
+
+添加此依赖后 我们可以在IDEA中查看运行情况
+
+然后在配置文件中配置Actuator添加暴露:
+                    management:
+                      endpoints:
+                        web:
+                          exposure:
+                            include: '*'
+
+接着我们打开刚刚启动的管理页面 地址为：http://localhost:8900/hystrix/
+
+在中间填写要监控的服务: 比如借阅服务: http://localhost:8301/actuator/hystrix.stream
+注意: 后面要添加/actuator/hystrix.stream 然后点击Monitor Stream即可进入监控页面
+
+可以看到现在都是Loading状态 这是因为还没有开始统计 我们现在尝试调用几次我们的服务
+
+可以看到 在调用之后 监控页面出现了信息
+
+可以看到每次访问都是正常的 所以显示为绿色 接着我们来尝试将图书服务关闭 这样就会导致服务降级甚至熔断 然后再多次访问此服务看看监控会如何变化
+
+可以看到 错误率直接飙升到100% 并且一段时间内持续出现错误 中心的圆圈也变成了红色 我们继续进行访问
+
+在出现大量错误的情况下保持持续访问 可以看到此时已经将服务熔断 Circuit更改为Open状态 并且图中的圆圈也变得更大 表示压力在持续上升

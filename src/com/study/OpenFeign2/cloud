@@ -1,0 +1,53 @@
+OpenFeign实现降级
+Hystrix也可以配合Feign进行降级 我们可以对应接口中定义的远程调用单独进行降级操作
+
+比如我们还是以用户服务挂掉为例 那么这个时候肯定是会远程调用失败的 也就是说我们的Controller中的方法在执行过程中会直接抛出异常 进而被Hystrix监控到并进行服务降级
+
+而实际上导致方法执行异常的根源就是远程调用失败 所以我们换个思路 既然用户服务调用失败 那么我就给这个远程调用添加一个替代方案 如果此远程调用失败 那么就直接上替代方案
+那么怎么实现替代方案呢 我们知道Feign都是以接口的形式来声明远程调用 那么既然远程调用已经失效 我们就自行对其进行实现 创建一个实现类 对原有的接口方法进行替代方案实现
+                    @Component   //注意: 需要将其注册为Bean Feign才能自动注入
+                    public class UserFallbackClient implements UserClient{
+
+                        @Override
+                        public User getUserById(int uid) {   //这里我们自行对其进行实现 并返回我们的替代方案
+
+                            return new User.setName("我是替代方案");
+
+                        }
+
+                    }
+
+实现完成后 我们只需要在原有的接口中指定失败替代实现即可:
+                    // fallback参数指定为我们刚刚编写的实现类
+                    @FeignClient(value = "userservice", fallback = UserFallbackClient.class)
+                    public interface UserClient {
+
+                        @RequestMapping("/user/{uid}")
+                        User getUserById(@PathVariable("uid") int uid);
+
+                    }
+
+现在去掉BorrowController的@HystrixCommand注解和备选方法:
+                    @RestController
+                    public class BorrowController {
+
+                        @Resource
+                        BorrowService service;
+
+                        @RequestMapping("/borrow/{uid}")
+                        UserBorrowDetail findUserBorrows(@PathVariable("uid") int uid){
+
+                            return service.getUserBorrowDetailByUid(uid);
+
+                        }
+
+                    }
+
+最后我们在配置文件中开启熔断支持:
+                    feign:
+                      circuitbreaker:
+                        enabled: true
+
+启动服务 调用接口试试看
+
+可以看到 现在已经采用我们的替代方案作为结果

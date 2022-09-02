@@ -1,0 +1,121 @@
+Hystrix服务熔断
+官方文档: https://cloud.spring.io/spring-cloud-static/spring-cloud-netflix/1.3.5.RELEASE/single/spring-cloud-netflix.html#_circuit_breaker_hystrix_clients
+
+我们知道 微服务之间是可以进行相互调用的 那么如果出现了下面的情况会导致什么问题?
+
+                    服务A ---请求---> 服务B ---请求---> 服务C ---请求---> 服务D ---请求---> 服务E(故障)
+                                                                                     此服务E出现故障
+                                                                                        无法响应
+
+由于位于最底端的服务提供者E发生故障 那么此时会直接导致服务ABCD全线崩溃 就像雪崩了一样
+                    服务A ---X---> 服务B ---X---> 服务C ---X---> 服务D ---X---> 服务E(故障)
+                                       整条链路上的服务                        此服务E出现故障
+                                      A/B/C/D全部不可用                          无法响应
+
+这种问题实际上是不可避免的 由于多种因素 比如网络卡顿 系统故障 硬件问题等 都存在一定可能，会导致这种极端的情况发生 因此 我们需要寻找一个应对这种极端情况的解决方案
+
+为了解决分布式系统的雪崩问题 SpringCloud提供了Hystrix熔断器组件 它就像我们家中的保险丝一样 当电流过载就会直接熔断 防止危险进一步发生 从而保证家庭用电安全
+可以想象一下 如果整条链路上的服务已经全线崩溃 这时还在不断地有大量的请求到达 需要各个服务进行处理 肯定是会使得情况越来越糟糕的
+
+我们来详细看看它的工作机制
+
+服务降级
+首先我们来看看服务降级 注意一定要区分开服务降级和服务熔断的区别 服务降级并不是直接返回错误
+而是可以提供一个补救措施 正常响应给请求者 这样相当于服务依然可用 但是服务能力肯定是下降了
+
+我们就基于借阅管理服务来进行讲解 我们不开启用户服务和图书服务 表示用户服务和图书服务已经挂掉了
+
+这里我们导入Hystrix的依赖(此项目已经停止维护 SpringCloud依赖中已经不自带了 所以说需要自己单独导入):
+                       <dependency>
+                            <groupId>org.springframework.cloud</groupId>
+                            <artifactId>spring-cloud-starter-netflix-hystrix</artifactId>
+                         		<version>2.2.10.RELEASE</version>
+                       </dependency>
+
+接着我们需要在启动类添加注解开启:
+                       @SpringBootApplication
+                       @EnableHystrix   // 启用Hystrix
+                       public class BorrowApplication {
+
+                           public static void main(String[] args) {
+                               SpringApplication.run(BorrowApplication.class, args);
+                           }
+
+                       }
+
+那么现在 由于用户服务和图书服务不可用 所以查询借阅选项的请求肯定是么办法正常响应的 这时我们可以提供一个备选方案 也就是说当服务出现异常时 返回我们的备选方案:
+                       @RestController
+                       public class BorrowController {
+
+                           @Resource
+                           BorrowService service;
+
+                           @HystrixCommand(fallbackMethod = "onError")    // 使用@HystrixCommand来指定备选方案
+                           @RequestMapping("/borrow/{uid}")
+                           UserBorrowDetail findUserBorrows(@PathVariable("uid") int uid){
+
+                               return service.getUserBorrowDetailByUid(uid);
+
+                           }
+
+                         	// 备选方案 这里直接返回空列表了
+                         	// 注意参数和返回值要和上面的一致
+                           UserBorrowDetail onError(int uid){
+
+                               return new UserBorrowDetail(null, Collections.emptyList());
+
+                           }
+
+                       }
+
+访问浏览器可以看到 虽然我们的服务无法正常运行了 但是依然可以给浏览器正常返回响应数据:
+
+服务降级是一种比较温柔的解决方案 虽然服务本身的不可用 但是能够保证正常响应数据
+
+服务熔断
+熔断机制是应对雪崩效应的一种微服务链路保护机制 当检查出链路的某个微服务不可用或者响应时间太长时
+会进行服务的降级 进而熔断该节点微服务的调用 快速返回"错误"的响应信息 当检测到该节点微服务响应正常后恢复调用链路
+
+实际上 熔断就是在降级的基础上进一步升级形成的 也就是说 在一段时间内多次调用失败 那么就直接升级为熔断
+
+我们可以添加两条输出日志:
+                       @Slf4j
+                       @RestController
+                       public class BorrowController {
+
+                           @Resource
+                           BorrowService borrowService;
+
+                           @HystrixCommand(fallbackMethod = "onError")
+                           @GetMapping(value = "/borrow/{uid}")
+                           UserBorrowDetail findUserBorrows(@PathVariable("uid") Integer uid) {
+
+                                log.info("开始向其他服务获取信息")
+                               return borrowService.getUserBorrowDetailByUid(uid);
+
+                           }
+
+                           UserBorrowDetail onError(Integer uid) {
+
+                               log.info("服务错误 进入备选方法");
+                               return new UserBorrowDetail(null, Collections.emptyList());
+
+                           }
+
+                       }
+
+接着 我们在浏览器中疯狂点击刷新 对此服务疯狂发起请求 现在可以去查看后台日志
+
+一开始的时候 会正常地去调用Controller对应的方法findUSerBorrows 发现失败后进入备选方法
+但是我们发现在持续请求一段时间之 没有再调用这个方法 而是直接调用备选方案 这便是升级到了熔断状态
+
+我们可以继续不断点击 继续不断地发起请求
+
+可以看到 过了一段时间之后 会尝试正常执行一次findUserBorrows 但是依然是失败状态 所以继续保存熔断状态
+
+所以得到结论 它能够对一段时间内出现的错误进行侦测 当侦测到出错次数过多时 熔断器会打开 所有的请求会直接响应失败
+一段时间后 只执行一定数量的请求 如果还是出现错误 那么则继续保持打开状态 否则说明服务恢复正常运行 关闭熔断器
+
+我们可以测试一下 开启另外两个服务之后 继续点击
+
+可以看到 当另外两个服务正常运行之后 当再次尝试调用findUserBorrows之后会成功 于是熔断机制就关闭了 服务恢复运行

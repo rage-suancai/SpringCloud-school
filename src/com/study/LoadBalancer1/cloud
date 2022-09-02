@@ -1,0 +1,84 @@
+LoadBalancer负载均衡
+实际上 在添加@LoadBalanced注解之后 会启用拦截器对我们发起的服务调用请求进行拦截(注意: 这里是针对我们发起的请求进行拦截)
+叫做LoadBalancerInterceptor 它实现ClientHttpRequestInterceptor接口:
+                    @FunctionalInterface
+                    public interface ClientHttpRequestInterceptor {
+                        ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException;
+                    }
+
+主要是对intercept方法的实现:
+                    public ClientHttpResponse intercept(final HttpRequest request, final byte[] body, final ClientHttpRequestExecution execution) throws IOException {
+                        URI originalUri = request.getURI();
+                        String serviceName = originalUri.getHost();
+                        Assert.state(serviceName != null, "Request URI does not contain a valid hostname: " + originalUri);
+                        return (ClientHttpResponse)this.loadBalancer.execute(serviceName, this.requestFactory.createRequest(request, body, execution));
+                    }
+
+我们可以打个断点看看实际是怎么在执行的
+
+服务端会在发起请求时执行这些拦截器
+
+那么这个拦截器做了什么事情呢 首先我们要明确 我们给过来的请求地址 并不是一个有效的主机名称 而是服务名称 那么怎么才能得到真正的需要访问的主机名称呢 肯定是得找Eureka获取的
+
+我们来看看loadBalancer.execute()做了什么 它的具体实现为BlockingLoadBalancerClient:
+                    // 从上面给进来了服务的名称和具体的请求实体
+                    public <T> T execute(String serviceId, LoadBalancerRequest<T> request) throws IOException {
+                        String hint = this.getHint(serviceId);
+                        LoadBalancerRequestAdapter<T, DefaultRequestContext> lbRequest = new LoadBalancerRequestAdapter(request, new DefaultRequestContext(request, hint));
+                        Set<LoadBalancerLifecycle> supportedLifecycleProcessors = this.getSupportedLifecycleProcessors(serviceId);
+                        supportedLifecycleProcessors.forEach((lifecycle) -> {
+                            lifecycle.onStart(lbRequest);
+                        });
+                      	// 可以看到在这里会调用choose方法自动获取对应的服务实例信息
+                        ServiceInstance serviceInstance = this.choose(serviceId, lbRequest);
+                        if (serviceInstance == null) {
+                            supportedLifecycleProcessors.forEach((lifecycle) -> {
+                                lifecycle.onComplete(new CompletionContext(Status.DISCARD, lbRequest, new EmptyResponse()));
+                            });
+                          	// 没有发现任何此服务的实例就抛异常(之前的测试中可能已经遇到了)
+                            throw new IllegalStateException("No instances available for " + serviceId);
+                        } else {
+                          	// 成功获取到对应服务的实例 这时就可以发起HTTP请求获取信息了
+                            return this.execute(serviceId, serviceInstance, lbRequest);
+                        }
+                    }
+
+所以 实际上在进行负载均衡的时候 会向Eureka发起请求 选择一个可用的对应服务 然后会返回此服务的主机地址等信息
+
+自定义负载均衡策略
+LoadBalancer默认提供了两种负载均衡策略:
+    > RandomLoadBalancer - 随机分配策略
+    > (默认)RoundRobinLoadBalancer - 轮询分配策略
+
+现在我们希望修改默认的负载均衡策略 可用进行指定 比如我们现在希望用户服务采用随机分配策略 我们需要先创建随机分配策略的配置类(不用加@Configuration):
+                    public class LoadBalancerConfig {
+                      	// 将官方提供的 RandomLoadBalancer 注册为Bean
+                        @Bean
+                        public ReactorLoadBalancer<ServiceInstance> randomLoadBalancer(Environment environment, LoadBalancerClientFactory loadBalancerClientFactory){
+
+                            String name = environment.getProperty(LoadBalancerClientFactory.PROPERTY_NAME);
+                            return new RandomLoadBalancer(loadBalancerClientFactory.getLazyProvider(name, ServiceInstanceListSupplier.class), name);
+
+                        }
+
+                    }
+
+接着我们需要为对应的服务指定负负载均衡策略 直接使用注解即可:
+                    @Configuration
+                    @LoadBalancerClient(value = "userservice",      // 指定为 userservice 服务 只要是调用此服务都会使用我们指定的策略
+                                        configuration = LoadBalancerConfig.class)   // 指定我们刚刚定义好的配置类
+                    public class BeanConfig {
+
+                        @Bean
+                        @LoadBalanced
+                        RestTemplate template(){
+
+                            return new RestTemplate();
+
+                        }
+
+                    }
+
+接着我们在BlockingLoadBalancerClient中添加断点 观察是否采用我们指定的策略进行请求
+
+发现访问userservice服务的策略已经更改为我们指定的策略了

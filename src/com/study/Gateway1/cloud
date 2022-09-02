@@ -1,0 +1,65 @@
+Gateway路由网关
+官网地址: https://docs.spring.io/spring-cloud-gateway/docs/current/reference/html/
+
+说到路由 想必各位一定最先想到的就是家里的路由器了 那么我们家里的路由器充当的是一个什么角色呢
+
+我们知道 如果我们需要连接互联网 那么就需要将手机或是电脑连接到家里的路由器才可以 而路由器则连接光猫 光猫再通过光纤连接到互联网 也就是说
+互联网方向发送过来的数据 需要经过路由器才能到达我们的设备 而路由器充当的就是数据包中转站 所有的局域网设备都无法直接与互联网连接
+而是需要经过路由器进行中转 我们一般说路由器下的网络是内网 而互联网那一端是外网
+
+                                       WAN口                           LAN口
+                    互联网 <----------------------------> 路由器 -------------------> [(手机) (电脑) (平板) (各种网络设备)]
+
+我们的局域网设备 无法被互联网上的其他设备直接访问 肯定是能够保证到安全性的 并互联网发送过来的数据 需要经过路由器进行解析 识别到底是哪一个设备的数据包 然后再发送给对应的设备
+
+而我们的微服务也是这样 一般情况下 可能并不是所有的微服务都需要直接暴露给外部调用这时我们就可以使用路由机制
+添加一层防护 让所有的请求全部通过路由来转发到各个微服务 并且转发给多个相同微服务实例也可以实现负载均衡
+
+在之前 路由的实现一般使用Zuul 但是已经停更 而现在新出现了由SpringCloud官方开发的Gateway路由
+它相比Zuul不仅性能上得到了一定的提升 并且是官方推出 契合性也会更好 所以我们这里就主要讲解Gateway
+
+部署网关
+现在我们来创建一个新的项目 作为我们的网关 这里需要添加两个依赖:
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.springframework.cloud</groupId>
+                            <artifactId>spring-cloud-starter-gateway</artifactId>
+                        </dependency>
+                        <dependency>
+                            <groupId>org.springframework.cloud</groupId>
+                            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+                        </dependency>
+                    </dependencies>
+
+第一个依赖就是网关的依赖 而第二个则跟其他微服务一样 需要注册到Eureka才能生效 注意别添加Web依赖 使用的是WebFlux框架
+
+然后我们来完善一下配置文件:
+                    server:
+                      port: 8500
+
+                    eureka:
+                      client:
+                        service-url:
+                          defaultZone: http://localhost:8801/eureka, http://localhost:8802/eureka
+
+                    spring:
+                      application:
+                        name: gateway
+
+现在就可以启动了 但是现在还没有配置任何的路由功能 我们接着将路由功能进行配置:
+                    spring:
+                      cloud:
+                        gateway:
+                          # 配置路由 注意这里是个列表 每一项都包含了很多信息
+                          routes:
+                           - id: borrow-service   # 路由名称
+                             uri: lb://borrowservice  # 路由的地址 lb表示使用负载均衡到微服务 也可以使用http正常转发
+                             predicates: # 路由规则 断言什么请求会被路由
+                             - Path=/borrow/**  # 只要是访问的这个路径 一律都被路由到上面指定的服务
+
+路由规则的详细列表(断言工厂列表)在这里: https://docs.spring.io/spring-cloud-gateway/docs/current/reference/html/#gateway-request-predicates-factories
+可以指定多种类型 包括指定时间段 Cookie携带情况 Header携带情况 访问的域名地址 访问的方法 路径 参数 访问者IP等 也可以使用配置类进行配置 但是还是推荐直接配置文件 省事
+
+可以看到 我们现在可以直接通过路由来访问我们的服务了 注意: 此时依然可以通过原有的服务地址进行访问
+
+这样我们就可以将不需要外网直接访问的微服务全部放到内网环境下 而只依靠网关来对外进行交涉
